@@ -221,6 +221,13 @@ ocs_web_worker = { opt-level = 0 }
 dwg-thumbnailer = { opt-level = 0 }
 dwg-thumbnailer-win = { opt-level = 0 }
 
+# Keep translation-resource and manifest parsing fast during macro expansion.
+i18n-embed = { opt-level = 2 }
+fluent-bundle = { opt-level = 2 }
+fluent-syntax = { opt-level = 2 }
+find-crate = { opt-level = 2 }
+"toml:0.5.11" = { opt-level = 2 }
+
 [profile.test]
 debug = 1
 
