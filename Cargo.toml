@@ -205,9 +205,21 @@ iced = { git = "https://github.com/iced-rs/iced.git", rev = "23604ff22ab0aad9e00
 
 [profile.dev]
 debug = 1
-
-[profile.dev.package."*"]
+# A wildcard package override would also override build-time dependencies.
 opt-level = 2
+
+# Build-time dependencies do not need the runtime optimization level.
+[profile.dev.build-override]
+opt-level = 0
+
+# Keep this list in sync with the root package and workspace members.
+[profile.dev.package]
+OpenCADStudio = { opt-level = 0 }
+ocs_plugin_api = { opt-level = 0 }
+ocs_save = { opt-level = 0 }
+ocs_web_worker = { opt-level = 0 }
+dwg-thumbnailer = { opt-level = 0 }
+dwg-thumbnailer-win = { opt-level = 0 }
 
 [profile.test]
 debug = 1
