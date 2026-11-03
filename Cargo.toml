@@ -206,6 +206,10 @@ iced = { git = "https://github.com/iced-rs/iced.git", rev = "23604ff22ab0aad9e00
 [profile.dev]
 debug = 1
 
+# Allow more parallel code generation for build-time crates.
+[profile.dev.build-override]
+codegen-units = 256
+
 [profile.dev.package."*"]
 opt-level = 2
 
