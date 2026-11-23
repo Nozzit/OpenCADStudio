@@ -3663,6 +3663,73 @@ fn a_locked_layer_does_not_strand_the_dimension_of_an_erased_line() {
     );
 }
 
+/// `entities_delete` counts the dimension a constraint takes with the erased
+/// line, and does not list it as skipped for its locked layer once it is gone.
+#[test]
+fn entities_delete_counts_the_dimension_of_an_erased_constraint() {
+    use crate::command::CmdResult;
+    use crate::scene::parametric_constraints::{
+        ConstraintKind, ParametricRef, ParametricScope, DYNAMIC_DIMENSION_LAYER,
+    };
+
+    let mut app = OpenCADStudio::new_for_test();
+    app.automation_op(r#"{"op":"new"}"#);
+    let i = app.active_tab;
+    app.tabs[i].scene.selection.borrow_mut().view.vp_size = (1600.0, 800.0);
+    app.automation_op(r#"{"op":"run","cmd":"LINE 0,0 40,0"}"#);
+    let handle = app.automation_op(r#"{"op":"query","type":"Line","detail":"summary"}"#)
+        ["entities"][0]["handle"]
+        .as_str()
+        .expect("the drawn line has a handle")
+        .to_owned();
+    let line = document::Handle::new(u64::from_str_radix(&handle, 16).unwrap());
+    let task = app.apply_cmd_result(CmdResult::AddDimensionalConstraint {
+        kind: ConstraintKind::DistanceX,
+        first: ParametricRef::point(line, 0),
+        second: ParametricRef::point(line, 1),
+        first_point: glam::DVec3::ZERO,
+        second_point: glam::DVec3::new(40.0, 0.0, 0.0),
+        location: glam::DVec3::new(20.0, -10.0, 0.0),
+        axis: glam::DVec3::X,
+        direction: None,
+        name: "d1".to_string(),
+        expression: "100".to_string(),
+        renamed: false,
+        label: "Linear constraint",
+    });
+    app.drive_headless_task(task).unwrap();
+    let dimension = {
+        let set = app.tabs[i]
+            .scene
+            .parametric_constraint_set(ParametricScope::ModelSpace)
+            .expect("the constraint was added");
+        set.constraints
+            .iter()
+            .find_map(|constraint| set.dimensions.get(&constraint.id).copied())
+            .expect("the constraint draws a dimension")
+    };
+    app.tabs[i]
+        .scene
+        .document
+        .layers
+        .get_mut(DYNAMIC_DIMENSION_LAYER)
+        .expect("the constraint's layer exists")
+        .lock();
+
+    let r = mutate(
+        &mut app,
+        &format!(
+            r#"{{"protocol":1,"op":"entities_delete","request_id":"dc","document_id":{{doc}},"handles":["{handle}","{:X}"]}}"#,
+            dimension.value()
+        ),
+    );
+    assert_eq!(r["ok"], true, "{}", r["error"]);
+    assert!(app.tabs[i].scene.document.get_entity(line).is_none());
+    assert!(app.tabs[i].scene.document.get_entity(dimension).is_none());
+    assert_eq!(r["result"]["erased"], 2, "{r}");
+    assert_eq!(r["result"]["skipped"], json!([]), "{r}");
+}
+
 /// The delete's cleanup drops a parameter only when nothing left reads it. Two
 /// constraints share one name here, so the name offered by the deleted
 /// constraint has to be checked against the surviving constraint, not only

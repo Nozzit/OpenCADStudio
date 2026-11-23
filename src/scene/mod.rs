@@ -3146,6 +3146,10 @@ pub struct Scene {
     /// Candidate handles per block, in document order and keyed by geometry epoch.
     block_members_cache: RefCell<Option<BlockMembers>>,
     leaders_by_annotation_cache: RefCell<Option<(u64, HashMap<Handle, Vec<Handle>>)>>,
+    /// Every object an erase removed while `erase_entities_reporting` runs,
+    /// the ones removed by the cleanup it sets off included (a constraint's
+    /// dimension). `None` outside it.
+    erase_journal: Option<Vec<Handle>>,
     /// Insert/Viewport/Block/BlockEnd handles omitted by the spatial index.
     unindexable_cache: RefCell<Option<(u64, Vec<Handle>)>>,
     /// `(epoch, layout block, present type names, list exposed to the UI)`.
@@ -3763,6 +3767,7 @@ impl Scene {
             entity_block_map_cache: RefCell::new(None),
             block_members_cache: RefCell::new(None),
             leaders_by_annotation_cache: RefCell::new(None),
+            erase_journal: None,
             unindexable_cache: RefCell::new(None),
             layout_type_names_cache: RefCell::new(None),
             layout_epoch: 0,
