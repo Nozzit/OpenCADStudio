@@ -757,3 +757,160 @@ fn hatch_fills_are_drawn_at_their_plane_height() {
         );
     }
 }
+
+/// An opaque one-colour raster in the Z=0 plane over `min..max`.
+fn flat_raster(
+    color: [u8; 4],
+    min: [f32; 2],
+    max: [f32; 2],
+    draw_depth: f32,
+) -> crate::scene::model::image_model::ImageModel {
+    use crate::scene::model::image_model::{ImageModel, ImageQuadVertex};
+    let corner = |x: f32, y: f32, u: f32, v: f32| ImageQuadVertex {
+        pos: [x, y, 0.0],
+        uv: [u, v],
+        pos_low: [0.0; 3],
+    };
+    let p0 = corner(min[0], min[1], 0.0, 1.0);
+    let p1 = corner(max[0], min[1], 1.0, 1.0);
+    let p2 = corner(max[0], max[1], 1.0, 0.0);
+    let p3 = corner(min[0], max[1], 0.0, 0.0);
+    let to3 = |p: &ImageQuadVertex| p.pos;
+    ImageModel {
+        render_instance: None,
+        entity: None,
+        file_path: String::new(),
+        pixels: std::sync::Arc::new(color.repeat(4)),
+        width: 2,
+        height: 2,
+        opacity: 1.0,
+        corners: [to3(&p0), to3(&p1), to3(&p2), to3(&p3)],
+        corners_low: [[0.0; 3]; 4],
+        draw_depth,
+        verts: vec![p0, p1, p2, p0, p2, p3],
+        pixelated: true,
+        use_alpha: false,
+    }
+}
+
+/// Infra #159: two rasters in one plane (an aerial photo and a height map at
+/// Z=0) stack in draw order in every view, also in a tilted one and in a
+/// drawing with many objects, where neighbouring draw-order depths lie close.
+#[test]
+#[ignore = "requires a GPU adapter"]
+fn coplanar_rasters_stack_in_draw_order_in_tilted_views() {
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+    let adapter = block_on(instance.request_adapter(&Default::default())).expect("GPU adapter");
+    let (device, queue) =
+        block_on(adapter.request_device(&Default::default())).expect("GPU device");
+    let validation = device.push_error_scope(wgpu::ErrorFilter::Validation);
+    let mut pipeline = Pipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
+    let bounds = Rectangle::with_size(Size::new(SIZE as f32, SIZE as f32));
+    let red = [255, 0, 0, 255];
+    let green = [0, 255, 0, 255];
+    // Different extents, so the two quads share no vertex.
+    let (below_min, below_max) = ([-500.0, -300.0], [500.0, 300.0]);
+    let (above_min, above_max) = ([-350.0, -250.0], [450.0, 330.0]);
+    let is_red = |p: &[u8]| p[0] > 128 && p[1] < 64;
+    let is_green = |p: &[u8]| p[1] > 128 && p[0] < 64;
+    let mut report = Vec::new();
+    let mut failures = Vec::new();
+    // The number of objects in the drawing sets how close neighbouring
+    // draw-order depths lie: the labels share one fixed range.
+    for objects in [100_u64, 1_000, 10_000, 50_000, 200_000] {
+        let entries = crate::scene::seed_draw_depth_entries(
+            (1..=objects).map(|handle| (handle, handle)).collect(),
+        );
+        let depth = |index: usize| {
+            crate::scene::draw_depth_value(entries[index].label, entries[index].half_label)[0]
+        };
+        let middle = objects as usize / 2;
+        let (below_depth, above_depth) = (depth(middle), depth(middle + 1));
+        for projection in [Projection::Orthographic, Projection::Perspective] {
+            // Plan view, then tilted down to 60° and 25° above the ground.
+            for elevation_deg in [90.0_f32, 60.0, 25.0] {
+                let mut camera = Camera {
+                    rotation: crate::scene::view::camera::yaw_pitch_to_quat(
+                        0.6,
+                        elevation_deg.to_radians(),
+                        0.0,
+                    ),
+                    projection,
+                    ..Camera::default()
+                };
+                camera.fit_to_bounds(
+                    glam::Vec3::new(-500.0, -300.0, -2.0),
+                    glam::Vec3::new(500.0, 330.0, 2.0),
+                    1.0,
+                );
+                let uniforms = Uniforms::new(&camera, bounds, false);
+                let above = flat_raster(green, above_min, above_max, above_depth);
+                let below = flat_raster(red, below_min, below_max, below_depth);
+                pipeline.upload_images(&device, &queue, std::slice::from_ref(&above));
+                let footprint = pixels(
+                    &device,
+                    &queue,
+                    &mut pipeline,
+                    &uniforms,
+                    &[],
+                    &Default::default(),
+                );
+                // Both upload orders: the result may not hang on it.
+                for (order, images) in [
+                    ("above first", [above.clone(), below.clone()]),
+                    ("below first", [below.clone(), above.clone()]),
+                ] {
+                    pipeline.upload_images(&device, &queue, &images);
+                    let bytes = pixels(
+                        &device,
+                        &queue,
+                        &mut pipeline,
+                        &uniforms,
+                        &[],
+                        &Default::default(),
+                    );
+                    let covered = footprint.chunks(4).filter(|p| is_green(p)).count();
+                    let wrong = footprint
+                        .chunks(4)
+                        .zip(bytes.chunks(4))
+                        .filter(|(f, p)| is_green(f) && is_red(p))
+                        .count();
+                    let case =
+                        format!("{objects} objects, {projection:?}, {elevation_deg}°, {order}");
+                    report.push(format!(
+                        "{case}: {wrong} of {covered} pixels of the upper raster show the lower one \
+                         (depths {below_depth:e} / {above_depth:e})"
+                    ));
+                    if covered == 0 || wrong > 0 {
+                        failures.push(case);
+                    }
+                    if let Ok(path) = std::env::var("OCS_DEPTH_TEST_IMAGES") {
+                        let path = std::path::Path::new(&path);
+                        std::fs::create_dir_all(path).unwrap();
+                        let name = format!(
+                            "rasters-{objects}-{projection:?}-{elevation_deg}-{}.png",
+                            order.replace(' ', "-")
+                        );
+                        image::save_buffer(
+                            path.join(name),
+                            &bytes,
+                            SIZE,
+                            SIZE,
+                            image::ColorType::Rgba8,
+                        )
+                        .unwrap();
+                    }
+                }
+            }
+        }
+    }
+    eprintln!("{}", report.join("\n"));
+    assert!(
+        block_on(validation.pop()).is_none(),
+        "GPU validation failed"
+    );
+    assert!(
+        failures.is_empty(),
+        "the lower raster shows through the upper one: {failures:?}"
+    );
+}
