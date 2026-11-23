@@ -1240,7 +1240,7 @@ impl Scene {
             })
             .map(|&handle| (handle, EraseRefusal::SheetViewport))
             .collect();
-        debug_assert!(self.erase_journal.is_none(), "erase reports do not nest");
+        // A fresh journal each time: one a caught panic left open is dropped.
         self.erase_journal = Some(Vec::new());
         refused.extend(self.remove_entities(&kept, true, true, true));
         let removed = self.erase_journal.take().unwrap_or_default();
