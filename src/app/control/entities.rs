@@ -517,15 +517,40 @@ impl OpenCADStudio {
 
     /// `entities_delete` — erase by handles. Every handle is
     /// checked up front; nothing is erased when one is missing.
+    /// `erased` counts the objects that are gone; the ones the erase
+    /// leaves in place are listed in `skipped` with the reason.
     pub(super) fn control_entities_delete(&mut self, req: &Value) -> Result<Task<Message>, Value> {
-        let handles = hex_handles(req, "handles")?;
+        let mut handles = hex_handles(req, "handles")?;
+        let mut seen = std::collections::HashSet::new();
+        handles.retain(|handle| seen.insert(*handle));
         let i = self.active_tab;
         require_existing(&self.tabs[i].scene.document, &handles)?;
         self.push_undo_snapshot(i, "ENTITIESDELETE");
         self.tabs[i].scene.erase_entities(&handles);
-        self.post_ref_op(i);
-        let erased = handles.len();
-        self.set_control_result(json!({ "erased": erased }));
+        let scene = &self.tabs[i].scene;
+        let skipped: Vec<Value> = handles
+            .iter()
+            .filter(|&&h| scene.document.get_entity(h).is_some())
+            .map(|&h| {
+                let reason = if scene.without_sheet_viewports(&[h]).is_empty() {
+                    "sheet_viewport"
+                } else if scene.is_layer_locked(h) {
+                    "locked"
+                } else if scene.is_reference_only(h) {
+                    "reference_only"
+                } else {
+                    "native_edit_disabled"
+                };
+                json!({ "handle": format!("{:X}", h.value()), "reason": reason })
+            })
+            .collect();
+        let erased = handles.len() - skipped.len();
+        // Nothing erased leaves the drawing unmodified, and the empty
+        // history record is dropped when it closes.
+        if erased > 0 {
+            self.post_ref_op(i);
+        }
+        self.set_control_result(json!({ "erased": erased, "skipped": skipped }));
         Ok(Task::none())
     }
 
