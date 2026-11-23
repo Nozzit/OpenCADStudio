@@ -4834,6 +4834,59 @@ DEAD
     }
 
     #[test]
+    fn entities_delete_reports_locked_layer_objects_as_skipped() {
+        let mut app = OpenCADStudio::new_for_test();
+        app.automation_op(r#"{"op":"new"}"#);
+        let locked_layer = add_test_layer(&mut app, "Locked");
+        let free = add_common_test_line(&mut app, document::types::Color::ByLayer);
+        let locked = add_common_test_line(&mut app, document::types::Color::ByLayer);
+        let i = app.active_tab;
+        {
+            let document = &mut app.tabs[i].scene.document;
+            let common = document.get_entity_mut(locked).unwrap().common_mut();
+            common.layer = "Locked".into();
+            common.layer_handle = Some(locked_layer);
+            document.layers.get_mut("Locked").unwrap().flags.locked = true;
+        }
+
+        // The erased count follows the document: a repeated handle is one
+        // object, and the object on the locked layer stays and is listed.
+        let r = mutate(
+            &mut app,
+            &format!(
+                r#"{{"protocol":1,"op":"entities_delete","request_id":"l0","document_id":{{doc}},"handles":["{0}","{0}","{1}"]}}"#,
+                handle_text(free),
+                handle_text(locked),
+            ),
+        );
+        assert_eq!(r["ok"], true, "{}", r["error"]);
+        assert_eq!(r["result"]["erased"], 1);
+        assert_eq!(
+            r["result"]["skipped"],
+            json!([{ "handle": handle_text(locked), "reason": "locked" }])
+        );
+        assert!(app.tabs[i].scene.document.get_entity(free).is_none());
+        assert!(app.tabs[i].scene.document.get_entity(locked).is_some());
+
+        // Nothing erased: no undo step and the drawing stays unmodified.
+        app.tabs[i].dirty = false;
+        let undo_before = app.tabs[i].history.undo_stack.len();
+        let r = mutate(
+            &mut app,
+            &format!(
+                r#"{{"protocol":1,"op":"entities_delete","request_id":"l1","document_id":{{doc}},"handles":["{}"]}}"#,
+                handle_text(locked),
+            ),
+        );
+        assert_eq!(r["ok"], true, "{}", r["error"]);
+        assert_eq!(r["result"]["erased"], 0);
+        assert_eq!(r["result"]["skipped"][0]["reason"], "locked");
+        assert!(app.tabs[i].scene.document.get_entity(locked).is_some());
+        assert_eq!(app.tabs[i].history.undo_stack.len(), undo_before);
+        assert!(!app.tabs[i].dirty);
+    }
+
+    #[test]
     fn entities_transform_moves_and_copies() {
         let mut app = OpenCADStudio::new_for_test();
         app.automation_op(r#"{"op":"new"}"#);
