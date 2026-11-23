@@ -757,17 +757,17 @@ fn hatch_fills_are_drawn_at_their_plane_height() {
         );
     }
 }
-
-/// An opaque one-colour raster in the Z=0 plane over `min..max`.
+/// An opaque one-colour raster in the plane at height `z` over `min..max`.
 fn flat_raster(
     color: [u8; 4],
     min: [f32; 2],
     max: [f32; 2],
+    z: f32,
     draw_depth: f32,
 ) -> crate::scene::model::image_model::ImageModel {
     use crate::scene::model::image_model::{ImageModel, ImageQuadVertex};
     let corner = |x: f32, y: f32, u: f32, v: f32| ImageQuadVertex {
-        pos: [x, y, 0.0],
+        pos: [x, y, z],
         uv: [u, v],
         pos_low: [0.0; 3],
     };
@@ -793,12 +793,20 @@ fn flat_raster(
     }
 }
 
-/// Infra #159: two rasters in one plane (an aerial photo and a height map at
-/// Z=0) stack in draw order in every view, also in a tilted one and in a
-/// drawing with many objects, where neighbouring draw-order depths lie close.
-#[test]
-#[ignore = "requires a GPU adapter"]
-fn coplanar_rasters_stack_in_draw_order_in_tilted_views() {
+/// One stacking case: a red raster at `below_z` and a green one `step` above
+/// it, with neighbouring draw-order depths in a drawing of `objects` objects.
+/// `green_draws_later` puts the green raster later in draw order.
+struct RasterStack {
+    objects: u64,
+    below_z: f32,
+    step: f32,
+    green_draws_later: bool,
+}
+
+/// Renders the case in plan view and tilted views, orthographic and
+/// perspective, with both upload orders. Per view: how many pixels of the
+/// green raster's footprint show red, of how many it covers.
+fn red_through_green(stack: &RasterStack) -> Vec<(String, usize, usize)> {
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
     let adapter = block_on(instance.request_adapter(&Default::default())).expect("GPU adapter");
     let (device, queue) =
@@ -806,48 +814,74 @@ fn coplanar_rasters_stack_in_draw_order_in_tilted_views() {
     let validation = device.push_error_scope(wgpu::ErrorFilter::Validation);
     let mut pipeline = Pipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
     let bounds = Rectangle::with_size(Size::new(SIZE as f32, SIZE as f32));
-    let red = [255, 0, 0, 255];
-    let green = [0, 255, 0, 255];
-    // Different extents, so the two quads share no vertex.
-    let (below_min, below_max) = ([-500.0, -300.0], [500.0, 300.0]);
-    let (above_min, above_max) = ([-350.0, -250.0], [450.0, 330.0]);
     let is_red = |p: &[u8]| p[0] > 128 && p[1] < 64;
     let is_green = |p: &[u8]| p[1] > 128 && p[0] < 64;
-    let mut report = Vec::new();
-    let mut failures = Vec::new();
-    // The number of objects in the drawing sets how close neighbouring
-    // draw-order depths lie: the labels share one fixed range.
-    for objects in [100_u64, 1_000, 10_000, 50_000, 200_000] {
-        let entries = crate::scene::seed_draw_depth_entries(
-            (1..=objects).map(|handle| (handle, handle)).collect(),
-        );
-        let depth = |index: usize| {
-            crate::scene::draw_depth_value(entries[index].label, entries[index].half_label)[0]
-        };
-        let middle = objects as usize / 2;
-        let (below_depth, above_depth) = (depth(middle), depth(middle + 1));
-        for projection in [Projection::Orthographic, Projection::Perspective] {
-            // Plan view, then tilted down to 60° and 25° above the ground.
-            for elevation_deg in [90.0_f32, 60.0, 25.0] {
-                let mut camera = Camera {
-                    rotation: crate::scene::view::camera::yaw_pitch_to_quat(
-                        0.6,
-                        elevation_deg.to_radians(),
-                        0.0,
-                    ),
-                    projection,
-                    ..Camera::default()
-                };
-                camera.fit_to_bounds(
-                    glam::Vec3::new(-500.0, -300.0, -2.0),
-                    glam::Vec3::new(500.0, 330.0, 2.0),
-                    1.0,
-                );
-                let uniforms = Uniforms::new(&camera, bounds, false);
-                let above = flat_raster(green, above_min, above_max, above_depth);
-                let below = flat_raster(red, below_min, below_max, below_depth);
-                pipeline.upload_images(&device, &queue, std::slice::from_ref(&above));
-                let footprint = pixels(
+    // The labels share one fixed range: the more objects, the closer
+    // neighbouring draw-order depths lie.
+    let entries = crate::scene::seed_draw_depth_entries(
+        (1..=stack.objects).map(|handle| (handle, handle)).collect(),
+    );
+    let depth = |index: usize| {
+        crate::scene::draw_depth_value(entries[index].label, entries[index].half_label)[0]
+    };
+    let middle = stack.objects as usize / 2;
+    let (earlier, later) = (depth(middle), depth(middle + 1));
+    let (red_depth, green_depth) = if stack.green_draws_later {
+        (earlier, later)
+    } else {
+        (later, earlier)
+    };
+    // Different extents, so the two quads share no vertex.
+    let red = flat_raster(
+        [255, 0, 0, 255],
+        [-500.0, -300.0],
+        [500.0, 300.0],
+        stack.below_z,
+        red_depth,
+    );
+    let green = flat_raster(
+        [0, 255, 0, 255],
+        [-350.0, -250.0],
+        [450.0, 330.0],
+        stack.below_z + stack.step,
+        green_depth,
+    );
+    let mut results = Vec::new();
+    for projection in [Projection::Orthographic, Projection::Perspective] {
+        // Plan view, then tilted down to 60° and 25° above the ground.
+        for elevation_deg in [90.0_f32, 60.0, 25.0] {
+            let mut camera = Camera {
+                rotation: crate::scene::view::camera::yaw_pitch_to_quat(
+                    0.6,
+                    elevation_deg.to_radians(),
+                    0.0,
+                ),
+                projection,
+                ..Camera::default()
+            };
+            camera.fit_to_bounds(
+                glam::Vec3::new(-500.0, -300.0, stack.below_z - 1.0),
+                glam::Vec3::new(500.0, 330.0, stack.below_z + 1.0),
+                1.0,
+            );
+            let uniforms = Uniforms::new(&camera, bounds, false);
+            pipeline.upload_images(&device, &queue, std::slice::from_ref(&green));
+            let footprint = pixels(
+                &device,
+                &queue,
+                &mut pipeline,
+                &uniforms,
+                &[],
+                &Default::default(),
+            );
+            let covered = footprint.chunks(4).filter(|p| is_green(p)).count();
+            // Both upload orders: the result may not hang on it.
+            for (order, images) in [
+                ("green-first", [green.clone(), red.clone()]),
+                ("red-first", [red.clone(), green.clone()]),
+            ] {
+                pipeline.upload_images(&device, &queue, &images);
+                let bytes = pixels(
                     &device,
                     &queue,
                     &mut pipeline,
@@ -855,62 +889,102 @@ fn coplanar_rasters_stack_in_draw_order_in_tilted_views() {
                     &[],
                     &Default::default(),
                 );
-                // Both upload orders: the result may not hang on it.
-                for (order, images) in [
-                    ("above first", [above.clone(), below.clone()]),
-                    ("below first", [below.clone(), above.clone()]),
-                ] {
-                    pipeline.upload_images(&device, &queue, &images);
-                    let bytes = pixels(
-                        &device,
-                        &queue,
-                        &mut pipeline,
-                        &uniforms,
-                        &[],
-                        &Default::default(),
+                let shown = footprint
+                    .chunks(4)
+                    .zip(bytes.chunks(4))
+                    .filter(|(f, p)| is_green(f) && is_red(p))
+                    .count();
+                let view = format!("{projection:?} {elevation_deg}° {order}");
+                if let Ok(path) = std::env::var("OCS_DEPTH_TEST_IMAGES") {
+                    let path = std::path::Path::new(&path);
+                    std::fs::create_dir_all(path).unwrap();
+                    let name = format!(
+                        "rasters-{}-step{}-{}-{}.png",
+                        stack.objects,
+                        stack.step,
+                        if stack.green_draws_later {
+                            "green-later"
+                        } else {
+                            "green-earlier"
+                        },
+                        view.replace([' ', '°'], "-")
                     );
-                    let covered = footprint.chunks(4).filter(|p| is_green(p)).count();
-                    let wrong = footprint
-                        .chunks(4)
-                        .zip(bytes.chunks(4))
-                        .filter(|(f, p)| is_green(f) && is_red(p))
-                        .count();
-                    let case =
-                        format!("{objects} objects, {projection:?}, {elevation_deg}°, {order}");
-                    report.push(format!(
-                        "{case}: {wrong} of {covered} pixels of the upper raster show the lower one \
-                         (depths {below_depth:e} / {above_depth:e})"
-                    ));
-                    if covered == 0 || wrong > 0 {
-                        failures.push(case);
-                    }
-                    if let Ok(path) = std::env::var("OCS_DEPTH_TEST_IMAGES") {
-                        let path = std::path::Path::new(&path);
-                        std::fs::create_dir_all(path).unwrap();
-                        let name = format!(
-                            "rasters-{objects}-{projection:?}-{elevation_deg}-{}.png",
-                            order.replace(' ', "-")
-                        );
-                        image::save_buffer(
-                            path.join(name),
-                            &bytes,
-                            SIZE,
-                            SIZE,
-                            image::ColorType::Rgba8,
-                        )
-                        .unwrap();
-                    }
+                    image::save_buffer(
+                        path.join(name),
+                        &bytes,
+                        SIZE,
+                        SIZE,
+                        image::ColorType::Rgba8,
+                    )
+                    .unwrap();
                 }
+                results.push((view, shown, covered));
             }
         }
     }
-    eprintln!("{}", report.join("\n"));
     assert!(
         block_on(validation.pop()).is_none(),
         "GPU validation failed"
     );
+    results
+}
+
+/// Infra #159: two rasters in one plane (an aerial photo and a height map at
+/// Z=0) stack in draw order in every view, also in a tilted one and in a
+/// drawing with many objects, where neighbouring draw-order depths lie close.
+#[test]
+#[ignore = "requires a GPU adapter"]
+fn coplanar_rasters_stack_in_draw_order_in_tilted_views() {
+    let mut failures = Vec::new();
+    for objects in [100_u64, 1_000, 10_000, 50_000, 200_000] {
+        let stack = RasterStack {
+            objects,
+            below_z: 0.0,
+            step: 0.0,
+            green_draws_later: true,
+        };
+        for (view, shown, covered) in red_through_green(&stack) {
+            eprintln!(
+                "coplanar, {objects} objects, {view}: {shown} of {covered} green pixels show red"
+            );
+            if covered == 0 || shown > 0 {
+                failures.push(format!("{objects} objects, {view}"));
+            }
+        }
+    }
     assert!(
         failures.is_empty(),
         "the lower raster shows through the upper one: {failures:?}"
     );
+}
+
+/// Measurement only, for rasters a small height apart below the ground (a
+/// plugin placing base maps under the terrain): per step and draw order,
+/// how much of the upper raster shows the lower one. Prints; asserts nothing.
+#[test]
+#[ignore = "requires a GPU adapter; measurement, prints its results"]
+fn rasters_a_height_step_apart_report() {
+    for objects in [10_000_u64, 200_000] {
+        for step in [0.001_f32, 0.01, 0.1] {
+            for green_draws_later in [true, false] {
+                let stack = RasterStack {
+                    objects,
+                    below_z: -2.0,
+                    step,
+                    green_draws_later,
+                };
+                for (view, shown, covered) in red_through_green(&stack) {
+                    eprintln!(
+                        "step {step} m, {objects} objects, upper raster {} in draw order, {view}: \
+                         {shown} of {covered} upper pixels show the lower raster",
+                        if green_draws_later {
+                            "later"
+                        } else {
+                            "earlier"
+                        }
+                    );
+                }
+            }
+        }
+    }
 }
