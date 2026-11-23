@@ -517,35 +517,27 @@ impl OpenCADStudio {
 
     /// `entities_delete` — erase by handles. Every handle is
     /// checked up front; nothing is erased when one is missing.
-    /// `erased` counts the objects that are gone; the ones the erase
-    /// leaves in place are listed in `skipped` with the reason.
+    /// `erased` counts the objects the erase removed, a leader's linked
+    /// annotation included; the requested ones it leaves in place are
+    /// listed in `skipped` with the reason.
     pub(super) fn control_entities_delete(&mut self, req: &Value) -> Result<Task<Message>, Value> {
         let mut handles = hex_handles(req, "handles")?;
-        let mut seen = std::collections::HashSet::new();
-        handles.retain(|handle| seen.insert(*handle));
+        let mut requested = std::collections::HashSet::new();
+        handles.retain(|handle| requested.insert(*handle));
         let i = self.active_tab;
         require_existing(&self.tabs[i].scene.document, &handles)?;
         self.push_undo_snapshot(i, "ENTITIESDELETE");
-        self.tabs[i].scene.erase_entities(&handles);
-        let scene = &self.tabs[i].scene;
-        let skipped: Vec<Value> = handles
+        let outcome = self.tabs[i].scene.erase_entities_reporting(&handles);
+        let skipped: Vec<Value> = outcome
+            .refused
             .iter()
-            .filter(|&&h| scene.document.get_entity(h).is_some())
-            .map(|&h| {
-                let reason = if scene.without_sheet_viewports(&[h]).is_empty() {
-                    "sheet_viewport"
-                } else if scene.is_layer_locked(h) {
-                    "locked"
-                } else if scene.is_reference_only(h) {
-                    "reference_only"
-                } else {
-                    "native_edit_disabled"
-                };
-                json!({ "handle": format!("{:X}", h.value()), "reason": reason })
+            .filter(|(handle, _)| requested.contains(handle))
+            .map(|(handle, reason)| {
+                json!({ "handle": format!("{:X}", handle.value()), "reason": reason.code() })
             })
             .collect();
-        let erased = handles.len() - skipped.len();
-        // Nothing erased leaves the drawing unmodified, and the empty
+        let erased = outcome.removed.len();
+        // Nothing removed leaves the drawing unmodified, and the empty
         // history record is dropped when it closes.
         if erased > 0 {
             self.post_ref_op(i);

@@ -744,8 +744,9 @@ single undo group. Use generic REST `POST /api/v1/entities_set` or MCP
 
 `{"op":"entities_delete","handles":[…]}` — every handle must exist
 (`entity_absent` lists the missing ones and nothing is erased). One undo
-step; `result.erased` counts the objects that are gone. Objects the erase
-leaves in place are listed in `result.skipped` as `{handle, reason}`, with
+step; `result.erased` counts the objects the erase removed, including the
+annotation that goes with a leader. Requested objects the erase leaves in
+place are listed in `result.skipped` as `{handle, reason}`, with
 reason `locked`, `reference_only`, `native_edit_disabled` or
 `sheet_viewport`. When nothing is erased, the drawing stays unmodified.
 

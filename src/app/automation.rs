@@ -4833,32 +4833,44 @@ DEAD
         assert_eq!(count_type(&mut app, "Line"), 1);
     }
 
+    /// Put `handle` on a new layer "Locked" and lock that layer.
+    fn put_on_locked_layer(app: &mut OpenCADStudio, handle: document::Handle) {
+        let i = app.active_tab;
+        if app.tabs[i].scene.document.layers.get("Locked").is_none() {
+            add_test_layer(app, "Locked");
+        }
+        let document = &mut app.tabs[i].scene.document;
+        let layer = document.layers.get_mut("Locked").unwrap();
+        layer.flags.locked = true;
+        let layer_handle = layer.handle;
+        let common = document.get_entity_mut(handle).unwrap().common_mut();
+        common.layer = "Locked".into();
+        common.layer_handle = Some(layer_handle);
+    }
+
+    fn delete_handles(app: &mut OpenCADStudio, handles: &[document::Handle]) -> Value {
+        let handles: Vec<String> = handles.iter().map(|&h| handle_text(h)).collect();
+        mutate(
+            app,
+            &format!(
+                r#"{{"protocol":1,"op":"entities_delete","request_id":"del","document_id":{{doc}},"handles":{}}}"#,
+                json!(handles)
+            ),
+        )
+    }
+
     #[test]
     fn entities_delete_reports_locked_layer_objects_as_skipped() {
         let mut app = OpenCADStudio::new_for_test();
         app.automation_op(r#"{"op":"new"}"#);
-        let locked_layer = add_test_layer(&mut app, "Locked");
         let free = add_common_test_line(&mut app, document::types::Color::ByLayer);
         let locked = add_common_test_line(&mut app, document::types::Color::ByLayer);
+        put_on_locked_layer(&mut app, locked);
         let i = app.active_tab;
-        {
-            let document = &mut app.tabs[i].scene.document;
-            let common = document.get_entity_mut(locked).unwrap().common_mut();
-            common.layer = "Locked".into();
-            common.layer_handle = Some(locked_layer);
-            document.layers.get_mut("Locked").unwrap().flags.locked = true;
-        }
 
         // The erased count follows the document: a repeated handle is one
         // object, and the object on the locked layer stays and is listed.
-        let r = mutate(
-            &mut app,
-            &format!(
-                r#"{{"protocol":1,"op":"entities_delete","request_id":"l0","document_id":{{doc}},"handles":["{0}","{0}","{1}"]}}"#,
-                handle_text(free),
-                handle_text(locked),
-            ),
-        );
+        let r = delete_handles(&mut app, &[free, free, locked]);
         assert_eq!(r["ok"], true, "{}", r["error"]);
         assert_eq!(r["result"]["erased"], 1);
         assert_eq!(
@@ -4871,19 +4883,65 @@ DEAD
         // Nothing erased: no undo step and the drawing stays unmodified.
         app.tabs[i].dirty = false;
         let undo_before = app.tabs[i].history.undo_stack.len();
-        let r = mutate(
-            &mut app,
-            &format!(
-                r#"{{"protocol":1,"op":"entities_delete","request_id":"l1","document_id":{{doc}},"handles":["{}"]}}"#,
-                handle_text(locked),
-            ),
-        );
+        let r = delete_handles(&mut app, &[locked]);
         assert_eq!(r["ok"], true, "{}", r["error"]);
         assert_eq!(r["result"]["erased"], 0);
         assert_eq!(r["result"]["skipped"][0]["reason"], "locked");
         assert!(app.tabs[i].scene.document.get_entity(locked).is_some());
         assert_eq!(app.tabs[i].history.undo_stack.len(), undo_before);
         assert!(!app.tabs[i].dirty);
+    }
+
+    #[test]
+    fn entities_delete_counts_the_annotation_of_a_locked_leader() {
+        let mut app = OpenCADStudio::new_for_test();
+        app.automation_op(r#"{"op":"new"}"#);
+        let i = app.active_tab;
+        let text = app.tabs[i].scene.add_entity(document::EntityType::Text(
+            document::entities::Text::default(),
+        ));
+        let mut leader = document::entities::Leader::default();
+        leader.annotation_handle = text;
+        let leader = app.tabs[i]
+            .scene
+            .add_entity(document::EntityType::Leader(leader));
+        put_on_locked_layer(&mut app, leader);
+        app.tabs[i].dirty = false;
+
+        // The leader stays; its text on a free layer goes with the erase,
+        // and the drawing is modified by it.
+        let r = delete_handles(&mut app, &[leader]);
+        assert_eq!(r["ok"], true, "{}", r["error"]);
+        assert!(app.tabs[i].scene.document.get_entity(leader).is_some());
+        assert!(app.tabs[i].scene.document.get_entity(text).is_none());
+        assert_eq!(r["result"]["erased"], 1);
+        assert_eq!(
+            r["result"]["skipped"],
+            json!([{ "handle": handle_text(leader), "reason": "locked" }])
+        );
+        assert!(app.tabs[i].dirty);
+    }
+
+    #[test]
+    fn a_refused_delete_keeps_an_empty_group() {
+        let mut app = OpenCADStudio::new_for_test();
+        app.automation_op(r#"{"op":"new"}"#);
+        let locked = add_common_test_line(&mut app, document::types::Color::ByLayer);
+        put_on_locked_layer(&mut app, locked);
+        let free = add_common_test_line(&mut app, document::types::Color::ByLayer);
+        let i = app.active_tab;
+        let empty = app.tabs[i].scene.create_group("EMPTY".into(), Vec::new());
+        let emptied = app.tabs[i].scene.create_group("EMPTIED".into(), vec![free]);
+
+        let r = delete_handles(&mut app, &[locked]);
+        assert_eq!(r["result"]["erased"], 0);
+        assert!(app.tabs[i].scene.document.objects.get(&empty).is_some());
+
+        // A group the erase empties goes; the one that was empty stays.
+        let r = delete_handles(&mut app, &[free]);
+        assert_eq!(r["result"]["erased"], 1);
+        assert!(app.tabs[i].scene.document.objects.get(&emptied).is_none());
+        assert!(app.tabs[i].scene.document.objects.get(&empty).is_some());
     }
 
     #[test]
