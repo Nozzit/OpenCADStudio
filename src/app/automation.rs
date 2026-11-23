@@ -4848,12 +4848,15 @@ DEAD
         common.layer_handle = Some(layer_handle);
     }
 
+    /// `entities_delete` with a request id of its own: a reused id is refused.
     fn delete_handles(app: &mut OpenCADStudio, handles: &[document::Handle]) -> Value {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let id = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let handles: Vec<String> = handles.iter().map(|&h| handle_text(h)).collect();
         mutate(
             app,
             &format!(
-                r#"{{"protocol":1,"op":"entities_delete","request_id":"del","document_id":{{doc}},"handles":{}}}"#,
+                r#"{{"protocol":1,"op":"entities_delete","request_id":"del{id}","document_id":{{doc}},"handles":{}}}"#,
                 json!(handles)
             ),
         )

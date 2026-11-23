@@ -106,6 +106,31 @@ fn group_expansion_snapshot_follows_group_edits() {
 }
 
 #[test]
+fn removing_a_group_member_drops_only_its_back_link() {
+    let mut scene = Scene::new();
+    let stays = scene.add_entity(line((0.0, 0.0), (1.0, 0.0)));
+    let leaves = scene.add_entity(line((0.0, 1.0), (1.0, 1.0)));
+    let group = scene.create_group("G".into(), vec![stays, leaves]);
+    let back_link = |scene: &Scene, handle: Handle| {
+        scene
+            .document
+            .get_entity(handle)
+            .unwrap()
+            .common()
+            .reactors
+            .contains(&group)
+    };
+    assert!(back_link(&scene, stays) && back_link(&scene, leaves));
+
+    assert!(scene.remove_entity_from_group_named("G", leaves));
+    assert!(
+        !back_link(&scene, leaves),
+        "the removed member points at no group"
+    );
+    assert!(back_link(&scene, stays), "the remaining member still does");
+}
+
+#[test]
 fn erase_refreshes_hover_generation_without_selection_change() {
     // Erasing the hovered-but-unselected entity must still drop the stale
     // hover overlay — via the hover generation, not the selection one.

@@ -99,7 +99,7 @@ impl Scene {
             return false;
         }
         let group_handle = updated.handle;
-        self.set_group_member_reactors(group_handle, &updated.entities, false);
+        self.set_group_member_reactors(group_handle, &[handle], false);
         self.document
             .objects
             .insert(group_handle, ObjectType::Group(updated));

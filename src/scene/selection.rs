@@ -1221,28 +1221,31 @@ impl Scene {
         self.erase_entities_reporting(handles);
     }
 
-    /// [`erase_entities`](Self::erase_entities), saying what it did: the
-    /// objects removed (linked leader annotations included) and the ones it
-    /// refused, with the reason.
+    /// [`erase_entities`](Self::erase_entities), saying what it did: every
+    /// object it removed, also through the cleanup it sets off (a leader's
+    /// annotation, a constraint's dimension), and the objects it refused that
+    /// are still in the drawing, with the reason.
     pub(crate) fn erase_entities_reporting(&mut self, handles: &[Handle]) -> EraseOutcome {
         let kept = self.without_sheet_viewports(handles);
-        let sheets: Vec<Handle> = if kept.len() == handles.len() {
-            Vec::new()
-        } else {
-            let kept: HashSet<Handle> = kept.iter().copied().collect();
-            handles
-                .iter()
-                .copied()
-                .filter(|handle| !kept.contains(handle))
-                .collect()
-        };
-        let mut outcome = self.remove_entities(&kept, true, true, true);
-        outcome.refused.extend(
-            sheets
-                .into_iter()
-                .map(|handle| (handle, EraseRefusal::SheetViewport)),
-        );
-        outcome
+        // The filter keeps the order and only drops sheet viewports.
+        let mut rest = kept.iter().peekable();
+        let mut refused: Vec<(Handle, EraseRefusal)> = handles
+            .iter()
+            .filter(|&handle| {
+                let is_kept = rest.peek() == Some(&handle);
+                if is_kept {
+                    rest.next();
+                }
+                !is_kept
+            })
+            .map(|&handle| (handle, EraseRefusal::SheetViewport))
+            .collect();
+        debug_assert!(self.erase_journal.is_none(), "erase reports do not nest");
+        self.erase_journal = Some(Vec::new());
+        refused.extend(self.remove_entities(&kept, true, true, true));
+        let removed = self.erase_journal.take().unwrap_or_default();
+        refused.retain(|(handle, _)| self.document.get_entity(*handle).is_some());
+        EraseOutcome { removed, refused }
     }
 
     /// Replace only planned sources, preserving annotations or leaders not exploded.
@@ -1284,8 +1287,8 @@ impl Scene {
         respect_layer_locks: bool,
         respect_reference_only: bool,
         expand_linked: bool,
-    ) -> EraseOutcome {
-        let mut outcome = EraseOutcome::default();
+    ) -> Vec<(Handle, EraseRefusal)> {
+        let mut refused = Vec::new();
         let erase_handles = if expand_linked {
             self.handles_expanded_for_leader_annotations(handles)
         } else {
@@ -1319,15 +1322,15 @@ impl Scene {
             // entities are plugin-owned: only the plugin-owned erase path
             // may remove them.
             if respect_layer_locks && self.is_layer_locked(h) {
-                outcome.refused.push((h, EraseRefusal::Locked));
+                refused.push((h, EraseRefusal::Locked));
                 continue;
             }
             if respect_reference_only && self.is_reference_only(h) {
-                outcome.refused.push((h, EraseRefusal::ReferenceOnly));
+                refused.push((h, EraseRefusal::ReferenceOnly));
                 continue;
             }
             if respect_reference_only && self.native_edit_disabled(h) {
-                outcome.refused.push((h, EraseRefusal::NativeEditDisabled));
+                refused.push((h, EraseRefusal::NativeEditDisabled));
                 continue;
             }
             let settings_handle = self.document.get_entity(h).and_then(|entity| match entity {
@@ -1342,7 +1345,9 @@ impl Scene {
                 _ => None,
             });
             if let Some(entity) = self.document.get_entity(h) {
-                outcome.removed.push(h);
+                if let Some(journal) = self.erase_journal.as_mut() {
+                    journal.push(h);
+                }
                 let owner = entity.common().owner_handle;
                 if !owner.is_null() {
                     candidate_block_handles.push(owner);
@@ -1521,7 +1526,7 @@ impl Scene {
                 self.bump_entities_with_block_deps(&erased, &[], &touched_blocks, false);
             }
         }
-        outcome
+        refused
     }
 
     /// Restore erased Arc-backed entities without re-linking their still-present
@@ -1580,7 +1585,7 @@ impl EraseRefusal {
 }
 
 /// What an erase did: the objects it removed and the ones it refused.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub(crate) struct EraseOutcome {
     pub(crate) removed: Vec<Handle>,
     pub(crate) refused: Vec<(Handle, EraseRefusal)>,
