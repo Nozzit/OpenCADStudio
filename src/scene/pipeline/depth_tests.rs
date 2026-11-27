@@ -390,118 +390,11 @@ fn all_draw_order_shaders_validate() {
     }
 }
 
-/// A 3-D style lets true depth decide: a line drawn in front by draw order
-/// but ten metres below another stays behind it in an oblique view of a
-/// survey-sized drawing. Uncapped, the draw-order shift is a fiftieth of the
-/// whole depth range, tens of metres here, and the lower line covers the
-/// upper one.
+/// The shaders read the shared frame uniforms at the offsets the CPU writes
+/// them: the raster shader finds its draw order, and the shaders that read
+/// the lights still find them behind it.
 #[test]
-#[ignore = "requires a GPU adapter"]
-fn a_3d_style_keeps_draw_order_from_overruling_true_depth() {
-    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
-    let adapter = block_on(instance.request_adapter(&Default::default())).expect("GPU adapter");
-    let bounds = Rectangle::with_size(Size::new(SIZE as f32, SIZE as f32));
-    for packed in [false, true] {
-        let mut limits = adapter.limits();
-        if packed {
-            limits.max_storage_buffers_per_shader_stage = 0;
-        }
-        let (device, queue) = block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-            required_limits: limits,
-            ..Default::default()
-        }))
-        .expect("GPU device");
-        let validation = device.push_error_scope(wgpu::ErrorFilter::Validation);
-        let mut pipeline = Pipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
-        let camera = Camera {
-            target: glam::DVec3::ZERO,
-            rotation: glam::Quat::from_rotation_z(-0.8) * glam::Quat::from_rotation_x(0.95),
-            distance: 400.0,
-            model_bounds: Some((
-                glam::DVec3::new(-3_000.0, -3_000.0, -10.0),
-                glam::DVec3::new(3_000.0, 3_000.0, 40.0),
-            )),
-            ..Camera::default()
-        };
-        // Both lines cross the view's centre: the upper one through the
-        // target, the lower one where the target's sight line meets Z = -10.
-        let toward_eye = camera.rotation * glam::Vec3::Z;
-        let below = -toward_eye * (10.0 / toward_eye.z);
-        let upper = WireModel::solid(
-            "1".into(),
-            vec![[-50., 0., 0.], [50., 0., 0.]],
-            [1., 0., 0., 1.],
-            false,
-        );
-        let lower = WireModel::solid(
-            "2".into(),
-            vec![
-                (below - glam::Vec3::Y * 50.).to_array(),
-                (below + glam::Vec3::Y * 50.).to_array(),
-            ],
-            [0., 1., 0., 1.],
-            false,
-        );
-        let mut wires = [upper, lower];
-        // Wide enough that the centre pixel is fully on both.
-        for wire in &mut wires {
-            wire.set_fixed_screen_width(9.0);
-        }
-        // The lower line is in front by draw order.
-        let depths = [(1, [-0.5, 0.]), (2, [0.5, 0.])].into_iter().collect();
-        let mut centre = |uniforms: &Uniforms| {
-            let bytes = pixels(&device, &queue, &mut pipeline, uniforms, &wires, &depths);
-            let at = (SIZE as usize / 2 * SIZE as usize + SIZE as usize / 2) * 4;
-            [bytes[at], bytes[at + 1]]
-        };
-        let mut uniforms = Uniforms::new(&camera, bounds, false);
-        let [red, green] = centre(&uniforms);
-        assert!(
-            green > red,
-            "packed={packed}: uncapped, draw order puts the lower line in front"
-        );
-        uniforms.limit_draw_order_to_pixel(camera.distance);
-        let [red, green] = centre(&uniforms);
-        assert!(
-            red > green,
-            "packed={packed}: capped, the upper line stays in front"
-        );
-        assert!(
-            block_on(validation.pop()).is_none(),
-            "GPU validation failed"
-        );
-    }
-}
-
-/// Every shader reads the shared frame uniforms at the offsets the CPU writes
-/// them: each draw-order shader finds the 3-D draw-order cap, and the shaders
-/// that read the lights still find them behind it.
-#[test]
-fn shaders_read_the_draw_order_cap_where_the_cpu_writes_it() {
-    let draw_order = [
-        ("wire", draw_order_shader!("wire.wgsl")),
-        ("wire_indexed", draw_order_shader!("wire_indexed.wgsl")),
-        ("block_wire", draw_order_shader!("block_wire.wgsl")),
-        (
-            "block_wire_storage",
-            draw_order_shader!("block_wire_storage.wgsl"),
-        ),
-        ("circle", draw_order_shader!("circle.wgsl")),
-        ("ellipse", draw_order_shader!("ellipse.wgsl")),
-        ("text", draw_order_shader!("text.wgsl")),
-        ("block_text", draw_order_shader!("block_text.wgsl")),
-        ("face3d", draw_order_shader!("face3d.wgsl")),
-        ("block_face3d", draw_order_shader!("block_face3d.wgsl")),
-        ("hatch", draw_order_shader!("hatch.wgsl")),
-        ("hatch_texture", draw_order_shader!("hatch_texture.wgsl")),
-        ("image", draw_order_shader!("image.wgsl")),
-        ("wipeout", draw_order_shader!("wipeout.wgsl")),
-    ];
-    let lit = [
-        ("background", include_str!("../../shaders/background.wgsl")),
-        ("mesh", include_str!("../../shaders/mesh.wgsl")),
-        ("shadow", include_str!("../../shaders/shadow.wgsl")),
-    ];
+fn shaders_read_the_image_draw_order_where_the_cpu_writes_it() {
     let offset = |name: &str, source: &str, member: &str| {
         let module = naga::front::wgsl::parse_str(source).expect("shader parses");
         module
@@ -520,14 +413,15 @@ fn shaders_read_the_draw_order_cap_where_the_cpu_writes_it() {
             })
             .unwrap_or_else(|| panic!("{name}.wgsl: Uniforms has no {member}"))
     };
-    for (name, source) in draw_order {
-        assert_eq!(
-            offset(name, source, "draw_order_limit"),
-            std::mem::offset_of!(Uniforms, draw_order_limit),
-            "{name}.wgsl reads the draw-order cap elsewhere"
-        );
-    }
-    for (name, source) in lit {
+    assert_eq!(
+        offset("image", draw_order_shader!("image.wgsl"), "image_draw_order"),
+        std::mem::offset_of!(Uniforms, image_draw_order),
+    );
+    for (name, source) in [
+        ("background", include_str!("../../shaders/background.wgsl")),
+        ("mesh", include_str!("../../shaders/mesh.wgsl")),
+        ("shadow", include_str!("../../shaders/shadow.wgsl")),
+    ] {
         assert_eq!(
             offset(name, source, "light_position_type"),
             std::mem::offset_of!(Uniforms, light_position_type),

@@ -5947,12 +5947,8 @@ impl Scene {
         uniforms.view_rot = crop_view_proj(uniforms.view_rot, uo, vo, us, vs);
         uniforms.viewport_size = [visible_w, visible_h];
         uniforms.flat_shade = if flags.flat_shade { 1.0 } else { 0.0 };
-        // Draw order is the 2D Wireframe convention; every 3-D style lets
-        // true depth decide what is in front, and draw order only breaks
-        // ties within a pixel of depth.
-        if inst.render_mode != document::entities::ViewportRenderMode::Wireframe2D {
-            uniforms.limit_draw_order_to_pixel(inst.camera.distance);
-        }
+        uniforms.image_draw_order =
+            crate::scene::pipeline::uniforms::image_draw_order(inst.render_mode);
         uniforms.transparency_enable = if self.transparency_display { 1.0 } else { 0.0 };
         uniforms.highlight_widen = self.selection_widen;
         uniforms.edge_rgb = crate::scene::pipeline::uniforms::edge_rgb_bits(self.edge_color);

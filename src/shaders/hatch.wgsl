@@ -22,7 +22,6 @@ struct Uniforms {
     _pad_eh:             f32,
     eye_low:             vec3<f32>,
     _pad_el:             f32,
-    draw_order_limit:    f32,
 }
 @group(0) @binding(0) var<uniform> u: Uniforms;
 
@@ -126,7 +125,7 @@ struct VOut {
                        local.y + inst.world_origin_low.y + v.translation_low.y - u.eye_low.y,
                        v.z - u.eye_low.z);
     o.clip = u.view_rot * vec4<f32>(hi + lo, 1.0);
-    o.clip = apply_draw_order(o.clip, inst.draw_depth + v.draw_depth, u.draw_order_limit);
+    o.clip = apply_draw_order(o.clip, inst.draw_depth + v.draw_depth);
     o.xz = local;
     o.instance_index = v.instance_index;
     return o;

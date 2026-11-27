@@ -10,7 +10,6 @@ struct Uniforms {
     _pad_eh: f32,
     eye_low: vec3<f32>,
     _pad_el: f32,
-    draw_order_limit: f32,
 }
 @group(0) @binding(0) var<uniform> u: Uniforms;
 
@@ -35,7 +34,7 @@ fn vs_main(v: VertexIn) -> VertexOut {
     let rel = (v.position - u.eye_high + v.translation)
         + (v.position_low + v.translation_low - u.eye_low);
     out.clip_pos = u.view_rot * vec4<f32>(rel, 1.0);
-    out.clip_pos = apply_draw_order(out.clip_pos, v.source_depth + v.instance_depth, u.draw_order_limit);
+    out.clip_pos = apply_draw_order(out.clip_pos, v.source_depth + v.instance_depth);
     out.color = v.color;
     return out;
 }

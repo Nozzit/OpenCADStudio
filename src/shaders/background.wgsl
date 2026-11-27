@@ -11,7 +11,7 @@ struct Uniforms {
     _pad_eh: f32,
     eye_low: vec3<f32>,
     _pad_el: f32,
-    draw_order_limit: f32,
+    image_draw_order: f32,
     _pad_dol0: f32,
     _pad_dol1: f32,
     _pad_dol2: f32,

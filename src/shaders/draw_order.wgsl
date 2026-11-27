@@ -5,12 +5,13 @@
 // CAD 2D draw order. Limit displacement to less than half the available
 // clip-space room, so we never push valid geometry across near/far planes.
 // This is a screen-only GPU change; PDF order uses its own stable sorting.
-//
-// `limit` (`Uniforms.draw_order_limit`) caps the shift per unit of order. The
-// 3-D styles set it to one pixel of depth, so true depth decides what is in
-// front and draw order only breaks ties within a pixel; 2D Wireframe leaves
-// it at f32::MAX, the bounds above alone.
-fn apply_draw_order(clip: vec4<f32>, order: f32, limit: f32) -> vec4<f32> {
+fn apply_draw_order(clip: vec4<f32>, order: f32) -> vec4<f32> {
+    return apply_draw_order_scaled(clip, order, 0.02);
+}
+
+// `apply_draw_order` with the shift per unit of order as a fraction of clip w
+// (`per_order`, 0.02 there). Zero leaves the geometry at its true depth.
+fn apply_draw_order_scaled(clip: vec4<f32>, order: f32, per_order: f32) -> vec4<f32> {
     // An instance hidden in place carries a depth no entity ever has: send it
     // outside the clip volume so it draws nothing until it is written back.
     if order > 1.0e30 {
@@ -26,6 +27,6 @@ fn apply_draw_order(clip: vec4<f32>, order: f32, limit: f32) -> vec4<f32> {
         return vec4<f32>(clip.xy, clip.w * (1.0 - 1.0e-6), clip.w);
     }
     let room = 0.5 * max(0.0, min(clip.z, clip.w - clip.z));
-    let scale = min(min(0.02 * max(clip.w, 0.0), room / (1.0 + abs(order))), limit);
+    let scale = min(per_order * max(clip.w, 0.0), room / (1.0 + abs(order)));
     return vec4<f32>(clip.xy, clip.z - order * scale, clip.w);
 }

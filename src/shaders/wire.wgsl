@@ -40,7 +40,6 @@ struct Uniforms {
     highlight_widen:          f32,
     eye_low:          vec3<f32>,
     edge_rgb:         f32,
-    draw_order_limit: f32,
 }
 @group(0) @binding(0) var<uniform> u: Uniforms;
 
@@ -273,7 +272,7 @@ fn view_span(a: vec4<f32>, b: vec4<f32>) -> vec2<f32> {
         let pos_rel = mix(rel_a, rel_b, which_end);
         let world_pos = pos_rel + perp_world * (eff_hw * side) + world_dir * along;
         var clip_pos = u.view_rot * vec4<f32>(world_pos, 1.0);
-        clip_pos = apply_draw_order(clip_pos, in.misc.x, u.draw_order_limit);
+        clip_pos = apply_draw_order(clip_pos, in.misc.x);
 
         final_clip = clip_pos;
         out_dist = mix(in.dists.x, in.dists.y, which_end) + along * (in.dists.y - in.dists.x) / max(world_len, 1e-6);
@@ -319,7 +318,7 @@ fn view_span(a: vec4<f32>, b: vec4<f32>) -> vec2<f32> {
         let offset_px = perp * qhw * side + dir * qhw * ext;
         let ndc_offset = offset_px / (u.viewport_size * 0.5);
         var clip_pos_out = clip_pos + vec4<f32>(ndc_offset * clip_pos.w, 0.0, 0.0);
-        clip_pos_out = apply_draw_order(clip_pos_out, in.misc.x, u.draw_order_limit);
+        clip_pos_out = apply_draw_order(clip_pos_out, in.misc.x);
 
         final_clip = clip_pos_out;
         out_dist = mix(in.dists.x, in.dists.y, mix(t_a, 1.0 - t_b, which_end)) + ext * qhw * u.world_per_pixel;
