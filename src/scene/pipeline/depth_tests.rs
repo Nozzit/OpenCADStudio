@@ -390,6 +390,46 @@ fn all_draw_order_shaders_validate() {
     }
 }
 
+/// The shaders read the shared frame uniforms at the offsets the CPU writes
+/// them: the raster shader finds its draw order, and the shaders that read
+/// the lights still find them behind it.
+#[test]
+fn shaders_read_the_image_draw_order_where_the_cpu_writes_it() {
+    let offset = |name: &str, source: &str, member: &str| {
+        let module = naga::front::wgsl::parse_str(source).expect("shader parses");
+        module
+            .types
+            .iter()
+            .find_map(|(_, ty)| match &ty.inner {
+                naga::TypeInner::Struct { members, .. }
+                    if ty.name.as_deref() == Some("Uniforms") =>
+                {
+                    members
+                        .iter()
+                        .find(|m| m.name.as_deref() == Some(member))
+                        .map(|m| m.offset as usize)
+                }
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("{name}.wgsl: Uniforms has no {member}"))
+    };
+    assert_eq!(
+        offset("image", draw_order_shader!("image.wgsl"), "image_draw_order"),
+        std::mem::offset_of!(Uniforms, image_draw_order),
+    );
+    for (name, source) in [
+        ("background", include_str!("../../shaders/background.wgsl")),
+        ("mesh", include_str!("../../shaders/mesh.wgsl")),
+        ("shadow", include_str!("../../shaders/shadow.wgsl")),
+    ] {
+        assert_eq!(
+            offset(name, source, "light_position_type"),
+            std::mem::offset_of!(Uniforms, light_position_type),
+            "{name}.wgsl reads the lights elsewhere"
+        );
+    }
+}
+
 #[test]
 #[ignore = "requires a GPU adapter"]
 fn draw_order_preserves_clip_boundaries_sorting_and_mesh_occlusion() {

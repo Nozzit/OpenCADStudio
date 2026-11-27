@@ -50,6 +50,12 @@ pub struct Uniforms {
     /// Edge colour of the filled-with-edges modes, `0x01RRGGBB` in the
     /// bits (see [`edge_rgb_bits`]); any other value draws them black.
     pub edge_rgb: f32,
+    /// Depth shift per unit of draw order of a raster image, as a fraction
+    /// of clip w (`draw_order.wgsl`). [`DRAW_ORDER_SCALE`], as every other
+    /// entity, in 2D Wireframe; zero in the 3-D styles, where a raster lies
+    /// at its true depth ([`image_draw_order`]).
+    pub image_draw_order: f32,
+    pub _pad_image_draw_order: [f32; 3],
 
     // Up to four native AcDbLight/Sun sources. Positions are uploaded relative
     // to the current eye, preserving large-coordinate precision without
@@ -132,6 +138,8 @@ impl Uniforms {
             highlight_widen: 0.0,
             eye_low,
             edge_rgb: 0.0,
+            image_draw_order: DRAW_ORDER_SCALE,
+            _pad_image_draw_order: [0.0; 3],
             light_position_type: [[0.0; 4]; 4],
             light_direction_intensity: [[0.0; 4]; 4],
             light_color_hotspot: [[0.0; 4]; 4],
@@ -163,9 +171,63 @@ impl Uniforms {
     }
 }
 
+/// Depth shift per unit of draw order, as a fraction of clip w
+/// (`apply_draw_order` in `draw_order.wgsl`).
+pub const DRAW_ORDER_SCALE: f32 = 0.02;
+
+/// [`Uniforms::image_draw_order`] for a view in `mode`. In the 3-D styles a
+/// raster lies at its true depth, as the reference keeps draw order to 2D
+/// Wireframe: shifted by draw order, a raster moves towards the eye by up
+/// to a fiftieth of the depth range, tens of metres in a survey-sized
+/// drawing, and covers a point cloud or terrain above it. Other entities
+/// keep their draw order there: lines on a face and a block's wipeout
+/// need its fine steps, which no shift small enough to leave true depth
+/// alone can keep apart.
+pub fn image_draw_order(mode: document::entities::ViewportRenderMode) -> f32 {
+    if mode == document::entities::ViewportRenderMode::Wireframe2D {
+        DRAW_ORDER_SCALE
+    } else {
+        0.0
+    }
+}
+
 /// The `edge_rgb` uniform for an edge colour (`None`: black).
 pub fn edge_rgb_bits(rgb: Option<[u8; 3]>) -> f32 {
     f32::from_bits(rgb.map_or(0, |[r, g, b]| {
         0x0100_0000 | u32::from(r) << 16 | u32::from(g) << 8 | u32::from(b)
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use document::entities::ViewportRenderMode as Mode;
+
+    /// The viewport of each style carries its raster draw order: 2D
+    /// Wireframe as every other entity, the 3-D styles none.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn rasters_keep_draw_order_only_in_2d_wireframe() {
+        let scene = crate::scene::Scene::new();
+        for (mode, expected) in [
+            (Mode::Wireframe2D, DRAW_ORDER_SCALE),
+            (Mode::Wireframe3D, 0.0),
+            (Mode::HiddenLine, 0.0),
+            (Mode::FlatShaded, 0.0),
+            (Mode::GouraudShaded, 0.0),
+            (Mode::FlatShadedWithEdges, 0.0),
+            (Mode::GouraudShadedWithEdges, 0.0),
+        ] {
+            let primitive = scene.build_offscreen_primitive(
+                Rectangle::with_size(iced::Size::new(64.0, 48.0)),
+                mode,
+                None,
+                false,
+            );
+            assert!(!primitive.viewports.is_empty());
+            for viewport in &primitive.viewports {
+                assert_eq!(viewport.uniforms.image_draw_order, expected, "{mode:?}");
+            }
+        }
+    }
 }
