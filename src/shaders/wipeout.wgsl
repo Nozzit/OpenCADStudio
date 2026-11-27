@@ -25,6 +25,7 @@ struct Uniforms {
     _pad_eh:             f32,
     eye_low:             vec3<f32>,
     _pad_el:             f32,
+    draw_order_limit:    f32,
 }
 @group(0) @binding(0) var<uniform> u: Uniforms;
 
@@ -109,7 +110,7 @@ struct VOut {
     // Draw-order bias (see draw_order.wgsl): the mask erases what draws BELOW its
     // entity and loses to what draws above — including its own frame wire,
     // which rides a +half-rank override.
-    o.clip = apply_draw_order(o.clip, h.draw_depth + v.draw_depth);
+    o.clip = apply_draw_order(o.clip, h.draw_depth + v.draw_depth, u.draw_order_limit);
     o.xz   = vec2<f32>(v.pos.x, v.pos.y);
     return o;
 }

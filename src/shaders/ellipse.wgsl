@@ -18,6 +18,7 @@ struct Uniforms {
     highlight_widen:             f32,
     eye_low:             vec3<f32>,
     _pad_el:             f32,
+    draw_order_limit:    f32,
 }
 @group(0) @binding(0) var<uniform> u: Uniforms;
 
@@ -104,7 +105,7 @@ fn resolve_hw_base(px_hw: f32) -> f32 {
     let world_pos_rel = center_rel + (u_val * ext_u) * u_axis + (v_val * ext_v) * v_axis;
 
     var clip_pos = u.view_rot * vec4<f32>(world_pos_rel, 1.0);
-    clip_pos = apply_draw_order(clip_pos, draw_depth);
+    clip_pos = apply_draw_order(clip_pos, draw_depth, u.draw_order_limit);
 
     var out: VertexOut;
     out.clip_pos = clip_pos;
